@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# URLs de los proveedores para pruebas en local: NUNCA se sube
+secrets.local.env

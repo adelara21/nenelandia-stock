@@ -1,0 +1,44 @@
+name: Stock unificado Gesio
+
+# Cuando se ejecuta:
+on:
+  schedule:
+    # IMPORTANTE: la hora es UTC. 05:00 UTC = 07:00 Espana (verano) / 06:00 (invierno).
+    # Tiene que correr ANTES de que Gesio lea el fichero. Ajustar cuando Gesio
+    # confirme su hora de importacion. GitHub puede retrasarlo ~15 min en horas pico.
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}   # boton para lanzarlo a mano desde la pestana Actions
+
+permissions:
+  contents: write          # necesario para guardar los maestros y el stock.csv
+
+# Evita que dos ejecuciones se pisen
+concurrency:
+  group: stock
+  cancel-in-progress: false
+
+jobs:
+  generar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generar el stock unificado
+        env:
+          BIMBI_FEED_URL: ${{ secrets.BIMBI_FEED_URL }}
+          CAMBRASS_FEED_URL: ${{ secrets.CAMBRASS_FEED_URL }}
+        run: python stock_unificado.py
+
+      - name: Publicar el resultado
+        run: |
+          git config user.name "stock-bot"
+          git config user.email "stock-bot@users.noreply.github.com"
+          git add masters docs/stock.csv
+          git commit -m "stock $(date -u +%Y-%m-%d)" || echo "Sin cambios que publicar"
+          git push
