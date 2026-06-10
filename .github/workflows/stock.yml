@@ -3,10 +3,10 @@ name: Stock unificado Gesio
 # Cuando se ejecuta:
 on:
   schedule:
-    # IMPORTANTE: la hora es UTC. 05:00 UTC = 07:00 Espana (verano) / 06:00 (invierno).
-    # Tiene que correr ANTES de que Gesio lea el fichero. Ajustar cuando Gesio
-    # confirme su hora de importacion. GitHub puede retrasarlo ~15 min en horas pico.
-    - cron: "0 5 * * *"
+    # IMPORTANTE: la hora es UTC. 21:00 UTC = 23:00 Espana (verano, CEST) / 22:00 (invierno, CET).
+    # Gesio actualiza el stock por la noche; esto corre antes para dejarle el fichero listo.
+    # GitHub puede retrasar el arranque ~15 min en horas pico.
+    - cron: "0 21 * * *"
   workflow_dispatch: {}   # boton para lanzarlo a mano desde la pestana Actions
 
 permissions:
