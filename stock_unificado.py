@@ -6,8 +6,9 @@ Descarga los feeds de Bimbidreams y Cambrass, inyecta 0 a los EAN que
 DESAPARECEN del feed (anti stock-fantasma), lo unifica TODO en un solo CSV
 y lo publica para que Gesio lo lea por URL una vez al dia.
 
-- Sin credenciales: los feeds son publicos y la salida se publica como
-  fichero del propio repositorio (GitHub Pages / raw URL).
+- Bimbidreams llega por URL publica; Cambrass por FTP con usuario y
+  contrasena (Secrets de GitHub, nunca en el codigo). La salida se publica
+  como fichero del propio repositorio (GitHub Pages / raw URL).
 - Pensado para correr en GitHub Actions (cron diario), pero funciona igual
   en local (python stock_unificado.py).
 
@@ -56,21 +57,39 @@ MIN_FILAS = {"bimbidreams": 200, "cambrass": 500}
 #   "sum" -> la suma (solo si de verdad se acumula stock de ambos)
 COMBINAR = "max"
 
-# Las URLs de los feeds NO van escritas aqui: se leen de variables cifradas.
-#   - En GitHub: se definen como "Secrets" (BIMBI_FEED_URL, CAMBRASS_FEED_URL).
+# Las URLs/credenciales de los feeds NO van escritas aqui: se leen de
+# variables cifradas.
+#   - En GitHub: se definen como "Secrets" (BIMBI_FEED_URL, CAMBRASS_FTP_*).
 #   - En local: se ponen en el fichero secrets.local.env (ignorado por git).
+#
+# Cambrass (desde jul-2026): la URL publica antigua quedo desfasada (sin
+# colecciones nuevas); el stock vivo se sirve por FTP en dos Excel .xls.
 PROVEEDORES = {
     "bimbidreams": {
+        "tipo":      "csv_url",
         "url_env":   "BIMBI_FEED_URL",
         "delim":     ",",
         "col_ean":   "codigo-barras",
         "col_stock": "stock",
     },
     "cambrass": {
-        "url_env":   "CAMBRASS_FEED_URL",
-        "delim":     ";",
-        "col_ean":   "EAN13",
-        "col_stock": "STOCK",
+        "tipo":      "xls_ftp",
+        "host_env":  "CAMBRASS_FTP_HOST",
+        "user_env":  "CAMBRASS_FTP_USER",
+        "pass_env":  "CAMBRASS_FTP_PASS",
+        "ficheros":  ["Stock1.xls", "Stock2.xls"],
+        "col_ean":   "EAN",
+        "col_stock": "Disponible",
+        # Complemento: Cambrass excluye del FTP los articulos baratos (los saca
+        # del dropshipping), pero SI los sirve y Nenelandia SI los vende. Para
+        # esos EAN (y SOLO para los que no vengan en el FTP) seguimos leyendo
+        # la URL antigua. El FTP siempre manda si un EAN esta en los dos.
+        "extra_csv": {
+            "url_env":   "CAMBRASS_FEED_URL",
+            "delim":     ";",
+            "col_ean":   "EAN13",
+            "col_stock": "STOCK",
+        },
     },
 }
 
@@ -118,6 +137,97 @@ def descargar(url):
         abort(f"No se pudo descargar {url}: {e}")
 
 
+def descargar_ftp(host, user, password, ficheros, nombre):
+    """Descarga varios ficheros de un FTP en una sola conexion.
+    Devuelve {nombre_fichero: bytes}."""
+    from ftplib import FTP
+    out = {}
+    try:
+        with FTP(host, timeout=90) as ftp:
+            ftp.login(user, password)
+            for fich in ficheros:
+                buf = io.BytesIO()
+                ftp.retrbinary(f"RETR {fich}", buf.write)
+                out[fich] = buf.getvalue()
+    except Exception as e:
+        abort(f"{nombre}: fallo el FTP {host}: {e}")
+    return out
+
+
+def parse_xls(contenido, cfg, nombre, fichero):
+    """Lee un Excel .xls (primera hoja, cabecera en la fila 1) y devuelve
+    {ean: stock}. Requiere el paquete 'xlrd' (pip install xlrd)."""
+    try:
+        import xlrd
+    except ImportError:
+        abort("Falta el paquete 'xlrd' para leer los .xls de Cambrass "
+              "(pip install xlrd).")
+    try:
+        wb = xlrd.open_workbook(file_contents=contenido)
+        sh = wb.sheet_by_index(0)
+    except Exception as e:
+        abort(f"{nombre}: {fichero} no es un .xls legible: {e}")
+    if sh.nrows < 2:
+        abort(f"{nombre}: {fichero} llego vacio (solo {sh.nrows} filas).")
+    cabecera = [str(sh.cell_value(0, j)).strip() for j in range(sh.ncols)]
+    if cfg["col_ean"] not in cabecera or cfg["col_stock"] not in cabecera:
+        abort(f"{nombre}: {fichero} no trae las columnas esperadas "
+              f"({cfg['col_ean']}, {cfg['col_stock']}). Cabecera: {cabecera}")
+    i_ean, i_stock = cabecera.index(cfg["col_ean"]), cabecera.index(cfg["col_stock"])
+    out = {}
+    for i in range(1, sh.nrows):
+        ean = str(sh.cell_value(i, i_ean)).strip()
+        if ean.endswith(".0"):          # xlrd devuelve floats en celdas numericas
+            ean = ean[:-2]
+        if not es_ean(ean):
+            continue
+        st = to_int_stock(sh.cell_value(i, i_stock))
+        out[ean] = max(out.get(ean, 0), st)  # si hay EAN repetido, el mayor
+    return out
+
+
+def leer_proveedor(nombre, cfg):
+    """Descarga y parsea el feed de un proveedor segun su tipo.
+    Devuelve {ean: stock}."""
+    if cfg.get("tipo") == "xls_ftp":
+        host = os.environ.get(cfg["host_env"])
+        user = os.environ.get(cfg["user_env"])
+        pwd  = os.environ.get(cfg["pass_env"])
+        if not (host and user and pwd):
+            abort(f"Faltan credenciales FTP de {nombre}: define los Secrets "
+                  f"'{cfg['host_env']}', '{cfg['user_env']}' y '{cfg['pass_env']}' "
+                  f"en GitHub (o en secrets.local.env para pruebas).")
+        contenidos = descargar_ftp(host, user, pwd, cfg["ficheros"], nombre)
+        out = {}
+        for fich, datos in contenidos.items():
+            parcial = parse_xls(datos, cfg, nombre, fich)
+            print(f"[{nombre}] {fich}: {len(parcial)} EAN validos")
+            for ean, st in parcial.items():
+                out[ean] = max(out.get(ean, 0), st)
+        # Complemento CSV (articulos que el proveedor excluye del FTP):
+        # solo aporta EAN que el FTP NO trae; nunca pisa un dato del FTP.
+        extra = cfg.get("extra_csv")
+        if extra:
+            url = os.environ.get(extra["url_env"])
+            if not url:
+                abort(f"Falta la URL complementaria de {nombre}: define el "
+                      f"Secret '{extra['url_env']}'.")
+            aportados = 0
+            for ean, st in parse_feed(descargar(url), extra, nombre).items():
+                if ean not in out:
+                    out[ean] = st
+                    aportados += 1
+            print(f"[{nombre}] URL complementaria: {aportados} EAN "
+                  f"que el FTP no traia")
+        return out
+    # tipo por defecto: CSV por URL
+    url = os.environ.get(cfg["url_env"])
+    if not url:
+        abort(f"Falta la URL del feed de {nombre}: define el Secret "
+              f"'{cfg['url_env']}' en GitHub (o en secrets.local.env para pruebas).")
+    return parse_feed(descargar(url), cfg, nombre)
+
+
 def parse_feed(texto, cfg, nombre):
     reader = csv.DictReader(io.StringIO(texto), delimiter=cfg["delim"])
     campos = [c.strip().strip('"') for c in (reader.fieldnames or [])]
@@ -159,11 +269,7 @@ def main():
     # --- FASE 1: descargar y validar TODO antes de tocar nada -------------
     parsed = {}
     for nombre, cfg in PROVEEDORES.items():
-        url = os.environ.get(cfg["url_env"])
-        if not url:
-            abort(f"Falta la URL del feed de {nombre}: define el Secret "
-                  f"'{cfg['url_env']}' en GitHub (o en secrets.local.env para pruebas).")
-        actual = parse_feed(descargar(url), cfg, nombre)
+        actual = leer_proveedor(nombre, cfg)
         if len(actual) < MIN_FILAS[nombre]:
             abort(f"{nombre}: solo {len(actual)} filas validas "
                   f"(< minimo {MIN_FILAS[nombre]}). Feed sospechoso de estar roto.")

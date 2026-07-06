@@ -29,10 +29,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Instalar dependencias
+        run: pip install xlrd   # para leer los .xls del FTP de Cambrass
+
       - name: Generar el stock unificado
         env:
           BIMBI_FEED_URL: ${{ secrets.BIMBI_FEED_URL }}
           CAMBRASS_FEED_URL: ${{ secrets.CAMBRASS_FEED_URL }}
+          CAMBRASS_FTP_HOST: ${{ secrets.CAMBRASS_FTP_HOST }}
+          CAMBRASS_FTP_USER: ${{ secrets.CAMBRASS_FTP_USER }}
+          CAMBRASS_FTP_PASS: ${{ secrets.CAMBRASS_FTP_PASS }}
         run: python stock_unificado.py
 
       - name: Publicar el resultado
