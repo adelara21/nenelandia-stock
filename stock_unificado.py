@@ -84,11 +84,20 @@ PROVEEDORES = {
         # del dropshipping), pero SI los sirve y Nenelandia SI los vende. Para
         # esos EAN (y SOLO para los que no vengan en el FTP) seguimos leyendo
         # la URL antigua. El FTP siempre manda si un EAN esta en los dos.
+        #
+        # OJO (10-sep-2026): esa URL antigua arrastra tambien articulos MUERTOS
+        # que Cambrass ya no sirve. Los distingue su columna ITEMWEB:
+        #   Y = publicable/vendible   |   N = no vendible
+        # Comprobado: los 1.115 EAN del FTP (fuente fiable) son TODOS 'Y', y
+        # los que Alejandro verifico muertos en el B2B son todos 'N'. Sin este
+        # filtro el sistema daba stock a producto que no se puede pedir.
         "extra_csv": {
             "url_env":   "CAMBRASS_FEED_URL",
             "delim":     ";",
             "col_ean":   "EAN13",
             "col_stock": "STOCK",
+            "col_filtro":     "ITEMWEB",
+            "filtro_valores": ("Y",),
         },
     },
 }
@@ -235,13 +244,25 @@ def parse_feed(texto, cfg, nombre):
         abort(f"{nombre}: el feed no trae las columnas esperadas "
               f"({cfg['col_ean']}, {cfg['col_stock']}). Cabecera recibida: {campos}")
     reader.fieldnames = campos  # cabeceras normalizadas (sin comillas/espacios)
+    col_filtro = cfg.get("col_filtro")
+    if col_filtro and col_filtro not in campos:
+        abort(f"{nombre}: el feed no trae la columna de filtro '{col_filtro}'. "
+              f"Cabecera recibida: {campos}")
+    validos = cfg.get("filtro_valores") or ()
     out = {}
+    descartados = 0
     for r in reader:
         ean = (r.get(cfg["col_ean"]) or "").strip()
         if not es_ean(ean):
             continue
+        if col_filtro and (r.get(col_filtro) or "").strip().upper() not in validos:
+            descartados += 1      # articulo que el proveedor no da por vendible
+            continue
         st = to_int_stock(r.get(cfg["col_stock"]))
         out[ean] = max(out.get(ean, 0), st)  # si hay EAN repetido, el mayor
+    if descartados:
+        print(f"[{nombre}] descartados por {col_filtro} distinto de "
+              f"{'/'.join(validos)}: {descartados} articulos no vendibles")
     return out
 
 
