@@ -3,10 +3,12 @@ name: Stock unificado Gesio
 # Cuando se ejecuta:
 on:
   schedule:
-    # IMPORTANTE: la hora es UTC. 21:00 UTC = 23:00 Espana (verano, CEST) / 22:00 (invierno, CET).
+    # IMPORTANTE: la hora es UTC. 19:30 UTC = 21:30 Espana (verano, CEST) / 20:30 (invierno, CET).
     # Gesio actualiza el stock por la noche; esto corre antes para dejarle el fichero listo.
-    # GitHub puede retrasar el arranque ~15 min en horas pico.
-    - cron: "0 21 * * *"
+    # OJO: GitHub puede retrasar el arranque HASTA ~2 HORAS en horas pico (visto 09-09-2026:
+    # programado 21:00 UTC, arranco 22:49 UTC -> carrera con la lectura de Gesio). Por eso
+    # se adelanta a 19:30 UTC: ni con el peor retraso pasamos de las ~23:30 Espana.
+    - cron: "30 19 * * *"
   workflow_dispatch: {}   # boton para lanzarlo a mano desde la pestana Actions
 
 permissions:
