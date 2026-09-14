@@ -23,6 +23,14 @@ que leer una URL.
 nada y avisa por email. Así Gesio sigue usando el fichero bueno del día anterior
 en vez de poner el catálogo entero a 0.
 
+**Reintentos (sep-2026):** cada descarga (URL y FTP) se intenta hasta 6 veces
+con esperas crecientes (~15 min en total). Motivo: Cambrass regenera su CSV de
+noche y, mientras el fichero no existe, su servidor redirige a una página HTML
+del B2B en vez de dar error; el cron caía un día sí y otro no con
+"Cabecera recibida: ['<!DOCTYPE html>']" y a mano funcionaba. Ahora una
+respuesta HTML o una redirección cuentan como fallo y se reintenta. Si tras
+los 6 intentos sigue mal, aplica el freno de seguridad (no publica y avisa).
+
 ---
 
 ## Puesta en marcha (una sola vez)

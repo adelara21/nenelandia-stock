@@ -28,7 +28,10 @@ import csv
 import io
 import json
 import os
+import re
 import sys
+import time
+import urllib.error
 import urllib.request
 import datetime
 
@@ -138,29 +141,84 @@ def to_int_stock(s):
         return 0
 
 
-def descargar(url):
-    try:
-        with urllib.request.urlopen(url, timeout=90) as r:
-            return r.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        abort(f"No se pudo descargar {url}: {e}")
+# Reintentos de descarga. Cambrass regenera su CSV de noche y, mientras el
+# fichero no existe, el servidor NO devuelve 404: redirige (302) a una pagina
+# HTML de su B2B. Visto 07/08/10/12/14-sep-2026: el cron caia con
+# "Cabecera recibida: ['<!DOCTYPE html>']" y el relanzamiento manual 5 minutos
+# despues iba bien. Por eso: varios intentos con espera creciente, sin seguir
+# redirecciones, y cualquier respuesta que parezca HTML cuenta como fallo.
+REINTENTOS = 6            # intentos en total
+ESPERAS = (60, 120, 180, 240, 300)   # segundos entre intentos (~15 min en total)
+
+
+class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
+    """Un feed CSV nunca redirige; si lo hace es que el fichero no esta."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirigido a {newurl} (fichero ausente)",
+            headers, fp)
+
+
+_opener = urllib.request.build_opener(_SinRedirecciones())
+
+
+def _parece_html(texto):
+    cabeza = texto.lstrip()[:300].lower()
+    return cabeza.startswith("<") or "<!doctype" in cabeza or "<html" in cabeza
+
+
+def _con_reintentos(intento, nombre):
+    """Ejecuta intento() hasta REINTENTOS veces. Devuelve el resultado o
+    aborta con el ultimo error."""
+    ultimo = None
+    for n in range(1, REINTENTOS + 1):
+        try:
+            return intento()
+        except Exception as e:
+            ultimo = e
+            print(f"[{nombre}] intento {n}/{REINTENTOS} fallido: {e}",
+                  file=sys.stderr)
+            if n < REINTENTOS:
+                espera = ESPERAS[min(n - 1, len(ESPERAS) - 1)]
+                print(f"[{nombre}] esperando {espera}s antes de reintentar",
+                      file=sys.stderr)
+                time.sleep(espera)
+    abort(f"{nombre}: {ultimo}")
+
+
+def descargar(url, nombre="descarga"):
+    def intento():
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "nenelandia-stock/1.0"})
+        with _opener.open(req, timeout=90) as r:
+            texto = r.read().decode("utf-8", errors="replace")
+        if _parece_html(texto):
+            muestra = re.sub(r"\s+", " ", texto[:200])
+            raise RuntimeError(
+                f"el servidor devolvio HTML en vez del feed: {muestra!r}")
+        if not texto.strip():
+            raise RuntimeError("respuesta vacia")
+        return texto
+    return _con_reintentos(intento, nombre)
 
 
 def descargar_ftp(host, user, password, ficheros, nombre):
     """Descarga varios ficheros de un FTP en una sola conexion.
     Devuelve {nombre_fichero: bytes}."""
     from ftplib import FTP
-    out = {}
-    try:
+
+    def intento():
+        out = {}
         with FTP(host, timeout=90) as ftp:
             ftp.login(user, password)
             for fich in ficheros:
                 buf = io.BytesIO()
                 ftp.retrbinary(f"RETR {fich}", buf.write)
+                if not buf.getvalue():
+                    raise RuntimeError(f"{fich} llego vacio")
                 out[fich] = buf.getvalue()
-    except Exception as e:
-        abort(f"{nombre}: fallo el FTP {host}: {e}")
-    return out
+        return out
+    return _con_reintentos(intento, f"{nombre} FTP {host}")
 
 
 def parse_xls(contenido, cfg, nombre, fichero):
@@ -222,7 +280,7 @@ def leer_proveedor(nombre, cfg):
                 abort(f"Falta la URL complementaria de {nombre}: define el "
                       f"Secret '{extra['url_env']}'.")
             aportados = 0
-            for ean, st in parse_feed(descargar(url), extra, nombre).items():
+            for ean, st in parse_feed(descargar(url, f"{nombre} URL complementaria"), extra, nombre).items():
                 if ean not in out:
                     out[ean] = st
                     aportados += 1
@@ -234,7 +292,7 @@ def leer_proveedor(nombre, cfg):
     if not url:
         abort(f"Falta la URL del feed de {nombre}: define el Secret "
               f"'{cfg['url_env']}' en GitHub (o en secrets.local.env para pruebas).")
-    return parse_feed(descargar(url), cfg, nombre)
+    return parse_feed(descargar(url, nombre), cfg, nombre)
 
 
 def parse_feed(texto, cfg, nombre):
