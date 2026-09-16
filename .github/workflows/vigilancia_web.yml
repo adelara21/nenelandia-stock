@@ -1,0 +1,81 @@
+name: Vigilancia web Nenelandia
+
+# Comprueba cada hora que la tienda responde. Si no responde, este trabajo
+# FALLA a proposito y GitHub envia un correo de aviso automaticamente.
+#
+# Por que existe: el 16-sep-2026 un ataque tumbo la web durante 7 horas de
+# madrugada y nadie se entero hasta la manana siguiente.
+
+on:
+  schedule:
+    # Cada hora en punto (hora UTC; da igual, se comprueba las 24 h).
+    # OJO: GitHub puede retrasar el arranque hasta ~1-2 h en horas pico.
+    - cron: "0 * * * *"
+  workflow_dispatch: {}   # boton para lanzarlo a mano desde la pestana Actions
+
+# Evita que dos comprobaciones se pisen
+concurrency:
+  group: vigilancia
+  cancel-in-progress: false
+
+jobs:
+  comprobar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Comprobar que la tienda responde
+        run: |
+          set -u
+
+          # Paginas vigiladas: portada, una familia grande y una ficha.
+          # Se vigilan las tres porque el 16-sep la portada respondia
+          # mientras las categorias daban error 500.
+          URLS="
+          https://nenelandia.es/
+          https://nenelandia.es/carritos-duo-trio
+          https://nenelandia.es/sillas-de-coche
+          "
+
+          # User-agent de navegador normal: con uno raro el firewall del
+          # hosting podria devolver 403 y darnos una falsa alarma.
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+
+          FALLOS=""
+
+          for URL in $URLS; do
+            OK=0
+            # Tres intentos antes de dar la alarma: un 500 suelto no es una
+            # caida, y no queremos avisos en falso que acaben ignorandose.
+            for INTENTO in 1 2 3; do
+              CODIGO=$(curl -s -o /tmp/pagina.html -w "%{http_code}" \
+                            -A "$UA" --max-time 30 "$URL" || echo "000")
+
+              # No basta con el codigo 200: comprobamos que la pagina trae
+              # contenido real, para detectar una respuesta vacia o rota.
+              if [ "$CODIGO" = "200" ] && grep -qi "nenelandia" /tmp/pagina.html; then
+                echo "OK     $URL  (intento $INTENTO)"
+                OK=1
+                break
+              fi
+
+              echo "FALLO  $URL  -> codigo $CODIGO  (intento $INTENTO de 3)"
+              [ "$INTENTO" != "3" ] && sleep 20
+            done
+
+            [ "$OK" = "0" ] && FALLOS="$FALLOS $URL"
+          done
+
+          if [ -n "$FALLOS" ]; then
+            echo "::error::LA TIENDA NO RESPONDE CORRECTAMENTE EN:$FALLOS"
+            echo ""
+            echo "Que hacer (protocolo del 16-sep-2026):"
+            echo "1. Abrir la web en el movil para confirmarlo."
+            echo "2. cPanel -> Uso de recursos: mirar si hay faults de CPU."
+            echo "3. cPanel -> Acceso sin procesar -> fila SSL: contar"
+            echo "   peticiones por hora e IPs unicas por si es otro ataque."
+            echo "4. Si hay ataque, abrir ticket a LucusHost con esos datos."
+            exit 1
+          fi
+
+          echo ""
+          echo "Todo correcto: la tienda responde en las tres paginas."
