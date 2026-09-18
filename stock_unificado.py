@@ -74,6 +74,11 @@ PROVEEDORES = {
         "delim":     ",",
         "col_ean":   "codigo-barras",
         "col_stock": "stock",
+        # Colchon de seguridad (18-sep-2026): Bimbidreams deja a veces 1 unidad
+        # declarada en articulos que en realidad estan agotados. Todo lo que
+        # venga por debajo de este minimo se manda a Gesio como 0. Solo Bimbi:
+        # en Cambrass el stock bajo es real.
+        "stock_minimo": 3,
     },
     "cambrass": {
         "tipo":      "xls_ftp",
@@ -360,9 +365,14 @@ def main():
     resumen = {}
     for nombre, actual in parsed.items():
         master = cargar_master(nombre)
+        minimo = PROVEEDORES[nombre].get("stock_minimo", 0)
+        recortados = 0
         # EAN presentes hoy -> stock real + marcar como vistos
         for ean, st in actual.items():
             master[ean] = HOY.isoformat()
+            if 0 < st < minimo:            # colchon de seguridad del proveedor
+                st = 0
+                recortados += 1
             salida[ean] = combina(salida.get(ean, 0), st)
         # EAN del maestro que YA NO aparecen -> 0 (dentro de la retencion)
         desap = 0
@@ -377,6 +387,9 @@ def main():
                 del master[ean]            # asentado a 0, lo soltamos
         guardar_master(nombre, master)
         resumen[nombre] = (len(actual), desap)
+        if minimo:
+            print(f"[{nombre}] {recortados} EAN con stock por debajo de "
+                  f"{minimo} -> enviados como 0")
 
     # --- FASE 3: escribir el CSV unificado --------------------------------
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)

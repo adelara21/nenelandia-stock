@@ -31,6 +31,13 @@ del B2B en vez de dar error; el cron caía un día sí y otro no con
 respuesta HTML o una redirección cuentan como fallo y se reintenta. Si tras
 los 6 intentos sigue mal, aplica el freno de seguridad (no publica y avisa).
 
+**Colchón de stock en Bimbidreams (18-sep-2026):** Bimbidreams deja a veces
+1 unidad declarada en artículos que en realidad están agotados. Todo lo que
+venga de Bimbi con menos de 3 unidades se manda a Gesio como **0**. Se ajusta
+con `stock_minimo` en la config del proveedor (`PROVEEDORES`); Cambrass no lo
+lleva porque su stock bajo es real. Para aplicarlo también a Cambrass basta
+con añadirle la misma línea.
+
 ---
 
 ## Puesta en marcha (una sola vez)
